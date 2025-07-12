@@ -46,3 +46,7 @@ app.*.map.json
 
 # Installer output
 /Output/
+
+# Exclude FFmpeg binaries
+assets/ffmpeg.exe
+assets/ffprobe.exe

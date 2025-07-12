@@ -155,7 +155,7 @@ class HomeScreen extends StatelessWidget {
                     );
                     return;
                   }
-                  provider.startRendering();
+                  provider.startRendering(context);
                 },
         ),
         const SizedBox(width: 20),

@@ -6,6 +6,8 @@ import 'package:path/path.dart' as p;
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 
+enum FileConflictAction { Skip, Overwrite, KeepBoth }
+
 enum RenderMode { loopToDuration, loopToAudio }
 
 class VideoTask with ChangeNotifier {
@@ -158,7 +160,48 @@ class VideoProvider with ChangeNotifier {
     }
   }
 
-  Future<void> startRendering() async {
+    Future<String> _getUniqueFilePath(String filePath) async {
+    String directory = p.dirname(filePath);
+    String filename = p.basenameWithoutExtension(filePath);
+    String extension = p.extension(filePath);
+    int counter = 1;
+
+    String newFilePath = filePath;
+    while (await File(newFilePath).exists()) {
+      newFilePath = p.join(directory, '$filename ($counter)$extension');
+      counter++;
+    }
+    return newFilePath;
+  }
+
+  Future<FileConflictAction?> _showConflictDialog(BuildContext context, String fileName) async {
+    return showDialog<FileConflictAction>(
+      context: context,
+      barrierDismissible: false, // User must choose an action
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Tệp đã tồn tại'),
+          content: Text('Tệp "$fileName" đã có trong thư mục output. Bạn muốn làm gì?'),
+          actions: <Widget>[
+            TextButton(
+              child: const Text('Bỏ qua'),
+              onPressed: () => Navigator.of(context).pop(FileConflictAction.Skip),
+            ),
+            TextButton(
+              child: const Text('Ghi đè'),
+              onPressed: () => Navigator.of(context).pop(FileConflictAction.Overwrite),
+            ),
+            TextButton(
+              child: const Text('Giữ cả hai'),
+              onPressed: () => Navigator.of(context).pop(FileConflictAction.KeepBoth),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> startRendering(BuildContext context) async {
     if (_isRendering || _outputDirectory == null) return;
 
     _isRendering = true;
@@ -183,7 +226,23 @@ class VideoProvider with ChangeNotifier {
         }
 
         double effectiveTargetDuration;
-        final outputPath = p.join(_outputDirectory!, '${task.outputName}.mp4');
+        String outputPath = p.join(_outputDirectory!, '${task.outputName}.mp4');
+
+        // Handle file conflicts
+        if (await File(outputPath).exists()) {
+          final action = await _showConflictDialog(context, p.basename(outputPath));
+
+          if (action == null || action == FileConflictAction.Skip) {
+            task.updateStatus('Đã bỏ qua');
+            addToLog('Đã bỏ qua tác vụ ${task.outputName} do tệp đã tồn tại.');
+            continue; // Skip to the next task
+          } else if (action == FileConflictAction.KeepBoth) {
+            outputPath = await _getUniqueFilePath(outputPath);
+            addToLog('Tệp mới sẽ được lưu tại: $outputPath');
+          } 
+          // If Overwrite, do nothing, ffmpeg's -y flag will handle it.
+        }
+
         task.outputPath = outputPath;
 
         if (task.renderMode == RenderMode.loopToAudio) {
