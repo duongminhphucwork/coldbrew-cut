@@ -6,7 +6,7 @@ import 'package:open_file_plus/open_file_plus.dart';
 import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 import 'task_card.dart';
-import 'package:windows_video_creator/video_provider.dart';
+import 'package:coldbrew_cut/video_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
