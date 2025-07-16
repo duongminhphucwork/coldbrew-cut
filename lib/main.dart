@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 import 'task_card.dart';
 import 'package:windows_video_creator/video_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(
@@ -76,15 +77,23 @@ class HomeScreen extends StatelessWidget {
           icon: const Icon(Icons.video_call),
           label: const Text('Thêm Video'),
           onPressed: () async {
+            final prefs = await SharedPreferences.getInstance();
+            final lastVideoDir = prefs.getString('last_video_dir');
+
             final result = await FilePicker.platform.pickFiles(
               type: FileType.video,
               allowMultiple: true,
+              initialDirectory: lastVideoDir,
             );
-            if (result != null) {
+            if (result != null && result.files.isNotEmpty) {
               for (var file in result.files) {
                 if (file.path != null) {
                   provider.addTask(file.path!);
                 }
+              }
+              // Save the directory of the first selected file
+              if (result.files.first.path != null) {
+                await prefs.setString('last_video_dir', p.dirname(result.files.first.path!));
               }
             }
           },
@@ -94,9 +103,15 @@ class HomeScreen extends StatelessWidget {
           icon: const Icon(Icons.folder_open),
           label: const Text('Chọn thư mục output'),
           onPressed: () async {
-            final result = await FilePicker.platform.getDirectoryPath();
+            final prefs = await SharedPreferences.getInstance();
+            final lastOutputDir = prefs.getString('last_output_dir');
+
+            final result = await FilePicker.platform.getDirectoryPath(
+              initialDirectory: lastOutputDir,
+            );
             if (result != null) {
               provider.setOutputDirectory(result);
+              await prefs.setString('last_output_dir', result);
               messenger.showSnackBar(
                 SnackBar(content: Text('Thư mục đầu ra: $result')),
               );

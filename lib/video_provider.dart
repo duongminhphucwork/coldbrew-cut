@@ -5,6 +5,10 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
+import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
+import 'package:ffmpeg_kit_flutter_new/media_information.dart';
+import 'package:ffmpeg_kit_flutter_new/return_code.dart';
 
 enum FileConflictAction { Skip, Overwrite, KeepBoth }
 
@@ -63,9 +67,11 @@ class VideoTask with ChangeNotifier {
     notifyListeners();
   }
 
+  @override
   void dispose() {
     outputNameController.dispose();
     durationController.dispose();
+    super.dispose();
   }
 }
 
@@ -114,8 +120,6 @@ class VideoProvider with ChangeNotifier {
       task.targetDuration = double.tryParse(value) ?? 0.0;
       if (value.isNotEmpty) {
         task._setRenderMode(RenderMode.loopToDuration);
-      } else if (task.audioPath == null) {
-        // Revert to audio mode only if no audio is selected
       }
       notifyListeners();
     }
@@ -144,23 +148,19 @@ class VideoProvider with ChangeNotifier {
     notifyListeners();
   }
 
-  Future<double> _getMediaDuration(String filePath, String ffprobePath) async {
-    final arguments = ['-v', 'quiet', '-print_format', 'json', '-show_format', filePath];
-    final result = await Process.run(ffprobePath, arguments);
-    if (result.exitCode == 0) {
-      try {
-        final jsonData = jsonDecode(result.stdout);
-        final durationString = jsonData['format']['duration'];
-        return double.tryParse(durationString ?? '0.0') ?? 0.0;
-      } catch (e) {
-        throw Exception('Failed to parse ffprobe output: $e');
-      }
-    } else {
-      throw Exception('FFprobe failed with exit code ${result.exitCode}: ${result.stderr}');
+  Future<double> _getMediaDuration(String filePath) async {
+    try {
+      final session = await FFprobeKit.getMediaInformation(filePath);
+      final mediaInfo = await session.getMediaInformation();
+      final durationString = mediaInfo?.getDuration();
+      return double.tryParse(durationString ?? '0.0') ?? 0.0;
+    } catch (e) {
+      addToLog("Error getting duration for $filePath: $e");
+      return 0.0;
     }
   }
 
-    Future<String> _getUniqueFilePath(String filePath) async {
+  Future<String> _getUniqueFilePath(String filePath) async {
     String directory = p.dirname(filePath);
     String filename = p.basenameWithoutExtension(filePath);
     String extension = p.extension(filePath);
@@ -177,7 +177,7 @@ class VideoProvider with ChangeNotifier {
   Future<FileConflictAction?> _showConflictDialog(BuildContext context, String fileName) async {
     return showDialog<FileConflictAction>(
       context: context,
-      barrierDismissible: false, // User must choose an action
+      barrierDismissible: false,
       builder: (BuildContext context) {
         return AlertDialog(
           title: const Text('Tệp đã tồn tại'),
@@ -202,25 +202,22 @@ class VideoProvider with ChangeNotifier {
   }
 
   Future<void> startRendering(BuildContext context) async {
-    if (_isRendering || _outputDirectory == null) return;
+    if (_outputDirectory == null || _tasks.isEmpty) {
+      addToLog('Vui lòng chọn thư mục output và thêm video.');
+      return;
+    }
 
     _isRendering = true;
     clearLog();
     addToLog('Bắt đầu quá trình render...');
     notifyListeners();
 
-    final exeDir = p.dirname(Platform.resolvedExecutable);
-    final ffmpegPath = p.join(exeDir, 'data', 'flutter_assets', 'assets', 'ffmpeg.exe');
-    final ffprobePath = p.join(exeDir, 'data', 'flutter_assets', 'assets', 'ffprobe.exe');
-
     for (var task in _tasks) {
-      if (task.isCompleted) continue;
-
       task.updateStatus('Đang xử lý...');
       task.updateProgress(0.0);
 
       try {
-        final videoDuration = await _getMediaDuration(task.videoPath, ffprobePath);
+        final videoDuration = await _getMediaDuration(task.videoPath);
         if (videoDuration <= 0) {
           throw Exception('Không thể đọc thời lượng video cho ${task.outputName}.');
         }
@@ -228,28 +225,24 @@ class VideoProvider with ChangeNotifier {
         double effectiveTargetDuration;
         String outputPath = p.join(_outputDirectory!, '${task.outputName}.mp4');
 
-        // Handle file conflicts
         if (await File(outputPath).exists()) {
           final action = await _showConflictDialog(context, p.basename(outputPath));
-
           if (action == null || action == FileConflictAction.Skip) {
             task.updateStatus('Đã bỏ qua');
             addToLog('Đã bỏ qua tác vụ ${task.outputName} do tệp đã tồn tại.');
-            continue; // Skip to the next task
+            continue;
           } else if (action == FileConflictAction.KeepBoth) {
             outputPath = await _getUniqueFilePath(outputPath);
             addToLog('Tệp mới sẽ được lưu tại: $outputPath');
-          } 
-          // If Overwrite, do nothing, ffmpeg's -y flag will handle it.
+          }
         }
-
         task.outputPath = outputPath;
 
         if (task.renderMode == RenderMode.loopToAudio) {
           if (task.audioPath == null) {
             throw Exception('Vui lòng chọn tệp âm thanh cho tác vụ ${task.outputName}.');
           }
-          effectiveTargetDuration = await _getMediaDuration(task.audioPath!, ffprobePath);
+          effectiveTargetDuration = await _getMediaDuration(task.audioPath!);
           if (effectiveTargetDuration <= 0) {
             throw Exception('Không thể đọc thời lượng âm thanh.');
           }
@@ -277,46 +270,61 @@ class VideoProvider with ChangeNotifier {
         }
         filterComplex += '$concatInputs concat=n=$loopCount:v=1:a=0[v];[v]scale=1080:1920[vout]';
 
-        List<String> commandArgs;
+        List<String> commandArgs = [];
         if (task.renderMode == RenderMode.loopToAudio) {
           commandArgs = [
-            '-i', task.videoPath,
-            '-i', task.audioPath!,
-            '-filter_complex', filterComplex,
-            '-map', '[vout]',
-            '-map', '1:a',
+            '-i', '"${task.videoPath}"',
+            '-i', '"${task.audioPath!}"',
+            '-filter_complex', '"$filterComplex"',
+            '-map', '"[vout]"',
+            '-map', '"1:a"',
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
             '-c:a', 'aac',
             '-shortest',
-            outputPath,
           ];
         } else {
           commandArgs = [
-            '-i', task.videoPath,
-            '-filter_complex', filterComplex,
-            '-map', '[vout]',
+            '-i', '"${task.videoPath}"',
+            '-filter_complex', '"$filterComplex"',
+            '-map', '"[vout]"',
             '-t', effectiveTargetDuration.toString(),
             '-c:v', 'libx264',
             '-preset', 'ultrafast',
             '-an',
-            outputPath,
           ];
         }
-        commandArgs.add('-y'); // Overwrite output file if it exists
+        commandArgs.add('-y');
+        commandArgs.add('"$outputPath"');
+        
+        final commandString = commandArgs.join(' ');
+        addToLog('Bắt đầu render tác vụ: ${task.outputName}');
 
-        addToLog('Đang xử lý tác vụ: ${task.outputName}...');
-        final result = await Process.run(ffmpegPath, commandArgs);
+        await FFmpegKit.executeAsync(
+          commandString,
+          (session) async {
+            final returnCode = await session.getReturnCode();
+            if (ReturnCode.isSuccess(returnCode)) {
+              task.updateStatus('Hoàn thành');
+              task.isCompleted = true;
+              task.updateProgress(1.0);
+              addToLog('Render thành công: ${task.outputPath}');
+            } else if (ReturnCode.isCancel(returnCode)) {
+              task.updateStatus('Đã hủy');
+              addToLog('Render đã bị hủy cho ${task.outputName}.');
+            } else {
+              task.updateStatus('Thất bại');
+              final logs = await session.getAllLogsAsString();
+              addToLog('Render thất bại cho ${task.outputName}. Log: $logs');
+            }
+          },
+          null, // Remove verbose log callback
+          (stats) {
+            final progress = (stats.getTime() / (effectiveTargetDuration * 1000)).clamp(0.0, 1.0);
+            task.updateProgress(progress);
+          },
+        );
 
-        if (result.exitCode == 0) {
-          task.updateStatus('Hoàn thành');
-          task.isCompleted = true;
-          task.updateProgress(1.0);
-          addToLog('Render thành công: ${task.outputPath}');
-        } else {
-          task.updateStatus('Thất bại');
-          addToLog('Render thất bại cho ${task.outputName}. Log: ${result.stderr}');
-        }
       } catch (e) {
         task.updateStatus('Lỗi');
         addToLog('Lỗi khi xử lý tác vụ ${task.outputName}: $e');
@@ -328,4 +336,3 @@ class VideoProvider with ChangeNotifier {
     notifyListeners();
   }
 }
-

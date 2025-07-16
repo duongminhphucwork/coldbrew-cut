@@ -14,7 +14,8 @@ dependencies:
   # For picking files and directories
   file_picker: ^10.2.0
 
-
+  # FFmpegKit for robust video processing
+  ffmpeg_kit_flutter_new: ^2.0.0
 
   # For state management
   provider: ^6.1.1
@@ -23,6 +24,7 @@ dependencies:
 
   # For path manipulation
   path: ^1.9.0
+  shared_preferences: ^2.2.3
 
 dev_dependencies:
   flutter_test:
@@ -33,5 +35,4 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/ffmpeg.exe
-    - assets/ffprobe.exe
+
