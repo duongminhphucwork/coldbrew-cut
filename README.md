@@ -1,4 +1,4 @@
-# windows_video_creator
+# ColdBrew Cut
 
 A new Flutter project.
 
